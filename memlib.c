@@ -63,7 +63,7 @@ void *mem_sbrk(int incr)
 	errno = ENOMEM;
 	fprintf(stderr, "ERROR: mem_sbrk failed. Ran out of memory...\n");
 	return (void *)-1;
-    }
+    } 
     mem_brk += incr;
     return (void *)old_brk;
 }
