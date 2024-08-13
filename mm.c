@@ -116,11 +116,27 @@ static void *coalesce(void *bp) {
 static void *find_fit(size_t asize) {
     char *bp;
 
-    for (bp = heap_listp; IS_ALLOC(bp) || GET_SIZE(bp) < asize; bp = NEXT_BLOCK(bp)) {
-        if (GET_SIZE(bp) <= 0) return NULL;
+    // for (bp = heap_listp; IS_ALLOC(bp) || GET_SIZE(bp) < asize; bp = NEXT_BLOCK(bp)) {
+    //     if (GET_SIZE(bp) <= 0) return NULL;
+    // } 
+    
+    // return bp; // first-fit
+
+    char *smallest_bp = NULL;
+    size_t size, smallest_size = __INT_MAX__;
+    for (bp = heap_listp; 0 < (size = GET_SIZE(bp)); bp = NEXT_BLOCK(bp)) {
+        if (!IS_ALLOC(bp)) {
+            if (size > asize) {
+                if (size < smallest_size) {
+                    smallest_bp = bp;
+                    smallest_size = size;
+                }
+            }
+            else if (size == asize) return bp;
+        }
     }
 
-    return bp;
+    return smallest_bp; // best-fit
 }
 
 static void place(void *bp, size_t asize) {
