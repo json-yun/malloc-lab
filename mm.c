@@ -114,17 +114,13 @@ static void *coalesce(void *bp) {
 }
 
 static void *find_fit(size_t asize) {
-    char *cur_blk = heap_listp;
-    size_t b_size;
+    char *bp;
 
-    b_size = GET_SIZE(cur_blk);
-    while (IS_ALLOC(cur_blk) || b_size < asize) {
-        if (b_size == 0) return NULL;
-        cur_blk += b_size;
-        b_size = GET_SIZE(cur_blk);
+    for (bp = heap_listp; IS_ALLOC(bp) || GET_SIZE(bp) < asize; bp = NEXT_BLOCK(bp)) {
+        if (GET_SIZE(bp) <= 0) return NULL;
     }
 
-    return cur_blk;
+    return bp;
 }
 
 static void place(void *bp, size_t asize) {
@@ -136,6 +132,10 @@ static void place(void *bp, size_t asize) {
         PUT(ADDR_FOOT(bp), asize+1);
         PUT(ADDR_HEAD(NEXT_BLOCK(bp)), old_size-asize);
         PUT(ADDR_FOOT(NEXT_BLOCK(bp)), old_size-asize);
+    }
+    else {
+        PUT(ADDR_HEAD(bp), old_size+1);
+        PUT(ADDR_FOOT(bp), old_size+1);
     }
 }
 
@@ -151,8 +151,7 @@ void *mm_malloc(size_t size)
 
     bp = find_fit(asize);
     if (bp == NULL) {
-        asize = MAX(asize, CHUNKSIZE);
-        bp = extend_heap(asize/HEAD_SIZE);
+        bp = extend_heap(MAX(asize, CHUNKSIZE)/HEAD_SIZE);
         if (bp == NULL)
             return NULL;
     }
