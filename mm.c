@@ -32,7 +32,6 @@ team_t team = {
     ""
 };
 
-
 #define ALIGN 8 // bytes
 #define HEAD_SIZE 4 // bytes
 #define CHUNKSIZE (1<<12) // extend heap by this amount (bytes)
@@ -58,12 +57,15 @@ team_t team = {
 
 #define ADDR_FOOT(p) ((char *)(p) + GET_SIZE(p) - HEAD_SIZE - HEAD_SIZE)
 
+#define N_CLASS 1
+
 typedef struct _node{
     struct _node *prev;
     struct _node *next;
 } Node;
 
 static char *heap_listp;
+static Node *segregated_list;
 static void *coalesce(Node *bp);
 static void *extend_heap(size_t words);
 
@@ -98,10 +100,19 @@ void connect_block(Node *pre, Node *bp) {
     bp->prev = pre;
 }
 
+int _log2(size_t size) {
+    int pow = 0;
+    while (size > 1 && pow < N_CLASS-1) {
+        size /= 2;  // size를 계속 2로 나누어 몇 번 나눌 수 있는지 셉니다.
+        pow++;
+    }
+    return pow;
+}
+
 int mm_init(void)
 {
     // prologue block
-    size_t size = ALIGNED_SIZE(2*HEAD_SIZE);
+    size_t size = ALIGNED_SIZE(N_CLASS*2*HEAD_SIZE); // 14 list-headers
     Node *bp;
 
     heap_listp = mem_sbrk(size+2*HEAD_SIZE);
@@ -114,14 +125,15 @@ int mm_init(void)
     PUT(heap_listp+size, 1); // epilogue header
 
     heap_listp += HEAD_SIZE; // points prologue payload
+    segregated_list = (Node *)heap_listp;
 
-    ((Node *)heap_listp)->prev = NULL;
-    ((Node *)heap_listp)->next = NULL;
+    for (int i = 0; i < N_CLASS; i++) {
+        (segregated_list[i]).prev = NULL;
+        (segregated_list[i]).next = NULL;
+    }
 
     if ((bp = extend_heap(CHUNKSIZE/HEAD_SIZE)) == NULL)
         return -1;
-
-    // connect_block((Node *)heap_listp, (Node *)bp);
 
     return 0;
 }
@@ -138,7 +150,7 @@ static void *extend_heap(size_t words) {
 
     PUT(ADDR_HEAD(NEXT_BLOCK(bp)), 1); // header of epilogue block
 
-    connect_block((Node *)heap_listp, (Node *)bp);
+    connect_block(segregated_list + _log2(size/ALIGN), (Node *)bp);
 
     return coalesce(bp);
 }
@@ -164,15 +176,21 @@ static void *coalesce(Node *bp) {
         PUT(ADDR_FOOT(bp), size);
     }
 
+    disconnect_block(bp);
+    connect_block(segregated_list+_log2(size/ALIGN), bp);
+
     return bp;
 }
 
 static void *find_fit(size_t asize) {
-    Node *bp;
+    Node *bp = NULL;
+    int exp = _log2(asize/ALIGN);
 
-    bp = ((Node *)heap_listp)->next;
-    while (bp != NULL && GET_SIZE(bp) < asize)
-        bp = bp->next;
+    for (; bp == NULL && exp < N_CLASS; exp++) {
+        bp = (segregated_list + exp)->next;
+        while (bp != NULL && GET_SIZE(bp) < asize)
+            bp = bp->next;
+    }
     
     return bp; // first-fit
 
@@ -206,7 +224,7 @@ static void place(Node *bp, size_t asize) {
         next = (Node *)(((char *)bp) + asize);
         PUT(ADDR_HEAD(next), old_size-asize);
         PUT(ADDR_FOOT(next), old_size-asize);
-        connect_block(bp->prev, next);
+        connect_block(segregated_list + _log2((old_size-asize)/ALIGN), next);
     }
     else {
         disconnect_block(bp);
@@ -239,14 +257,14 @@ void *mm_malloc(size_t size)
 void mm_free(void *bp)
 {
     size_t size = GET_SIZE(bp);
-    Node *cur = (Node *)heap_listp;
+    Node *cur = segregated_list + _log2((size/ALIGN));
 
     PUT(ADDR_HEAD(bp), size);
     PUT(ADDR_FOOT(bp), size);
-    while ((size_t)(cur->next) > (size_t)bp) cur = cur->next; // list by address
-    connect_block((Node *)cur, (Node *)bp);
+    // while ((size_t)(cur->next) > (size_t)bp) cur = cur->next; // list by address
+    connect_block(cur, (Node *)bp);
 
-    bp = coalesce(bp);
+    coalesce(bp);
 }
 
 void *mm_realloc(void *ptr, size_t size)
