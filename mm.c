@@ -32,32 +32,26 @@ team_t team = {
     ""
 };
 
-#define ALIGN 8 // bytes
-#define HEAD_SIZE 4 // bytes
+#define ALIGN 8 // alignment condition
+#define HEAD_SIZE 4 // amount of header/footer
 #define CHUNKSIZE (1<<12) // extend heap by this amount (bytes)
-#define ALIGNED_SIZE(size) ((size + HEAD_SIZE + HEAD_SIZE + ALIGN-1) & ~(ALIGN-1))
-
+#define ALIGNED_SIZE(size) ((size + HEAD_SIZE + HEAD_SIZE + ALIGN-1) & ~(ALIGN-1)) // required block size(header+payload+footer). round up to alignment condition.
+#define MIN_SIZE ALIGNED_SIZE(1+2*HEAD_SIZE)
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define GET(p) (*(size_t *)(p))
 #define PUT(p, val) (*(size_t *)(p) = (val))
 
-#define ADDR_HEAD(bp) ((char *)(bp) - HEAD_SIZE)
+#define ADDR_HEAD(bp) ((char *)(bp) - HEAD_SIZE) // get address of header
 
 #define GET_SIZE(bp) (GET(ADDR_HEAD(bp)) & ~(ALIGN-1))
 #define IS_ALLOC(bp) (GET(ADDR_HEAD(bp)) & 0x1)
 
-#define PRED(bp) ((char *)(bp))
-#define SUCC(bp) ((char *)(bp) + HEAD_SIZE)
-
 #define PREV_BLOCK(bp) ((char *)(bp) - (GET((char *)(bp) - 2*HEAD_SIZE) & ~(ALIGN-1)))
 #define NEXT_BLOCK(bp) ((char *)(bp) + GET_SIZE(bp))
 
-#define PRED_BLOCK(bp) (*(char **)PRED(bp))
-#define SUCC_BLOCK(bp) (*(char **)SUCC(bp))
+#define ADDR_FOOT(p) ((char *)(p) + GET_SIZE(p) - HEAD_SIZE - HEAD_SIZE) // get address of footer
 
-#define ADDR_FOOT(p) ((char *)(p) + GET_SIZE(p) - HEAD_SIZE - HEAD_SIZE)
-
-#define N_CLASS 1
+#define N_CLASS 18 // # of size classes
 
 typedef struct _node{
     struct _node *prev;
@@ -80,11 +74,13 @@ static void *extend_heap(size_t words);
 //     test3 = mm_malloc(8);
 //     mm_free(test);
 //     mm_free(test2);
+//     mm_realloc(test3, 15);
 //     mm_free(test3);
 
 //     return 0;
 // }
 
+// 연결 리스트에 블록을 삭제
 void disconnect_block(Node *bp) {
     if (bp->prev != NULL)
         bp->prev->next = bp->next;
@@ -92,6 +88,7 @@ void disconnect_block(Node *bp) {
         bp->next->prev = bp->prev;
 }
 
+// 연결 리스트에 블록을 끼워넣기
 void connect_block(Node *pre, Node *bp) {
     if (pre->next != NULL)
         pre->next->prev = bp;
@@ -100,19 +97,23 @@ void connect_block(Node *pre, Node *bp) {
     bp->prev = pre;
 }
 
-int _log2(size_t size) {
-    int pow = 0;
-    while (size > 1 && pow < N_CLASS-1) {
-        size /= 2;  // size를 계속 2로 나누어 몇 번 나눌 수 있는지 셉니다.
+// log2 size를 올림한 수를 반환
+int find_class(size_t words) {
+    int pow = 0, i = 1;
+    
+    while (words > i && pow < N_CLASS-1) {
+        i = i << 1;
         pow++;
     }
     return pow;
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////
+
 int mm_init(void)
 {
     // prologue block
-    size_t size = ALIGNED_SIZE(N_CLASS*2*HEAD_SIZE); // 14 list-headers
+    size_t size = ALIGNED_SIZE(N_CLASS*2*HEAD_SIZE);
     Node *bp;
 
     heap_listp = mem_sbrk(size+2*HEAD_SIZE);
@@ -131,7 +132,7 @@ int mm_init(void)
         (segregated_list[i]).prev = NULL;
         (segregated_list[i]).next = NULL;
     }
-
+    // extend_heap(1);
     if ((bp = extend_heap(CHUNKSIZE/HEAD_SIZE)) == NULL)
         return -1;
 
@@ -150,7 +151,7 @@ static void *extend_heap(size_t words) {
 
     PUT(ADDR_HEAD(NEXT_BLOCK(bp)), 1); // header of epilogue block
 
-    connect_block(segregated_list + _log2(size/ALIGN), (Node *)bp);
+    connect_block(segregated_list + find_class(size/ALIGN), (Node *)bp);
 
     return coalesce(bp);
 }
@@ -177,46 +178,51 @@ static void *coalesce(Node *bp) {
     }
 
     disconnect_block(bp);
-    connect_block(segregated_list+_log2(size/ALIGN), bp);
+    connect_block(segregated_list+find_class(size/ALIGN), bp);
 
     return bp;
 }
 
 static void *find_fit(size_t asize) {
     Node *bp = NULL;
-    int exp = _log2(asize/ALIGN);
+    Node *smallest_bp = NULL;
+    size_t size, smallest_size = -1;
+    int exp = find_class(asize/ALIGN);
 
-    for (; bp == NULL && exp < N_CLASS; exp++) {
-        bp = (segregated_list + exp)->next;
-        while (bp != NULL && GET_SIZE(bp) < asize)
-            bp = bp->next;
-    }
-    
-    return bp; // first-fit
-
-    // char *smallest_bp = NULL;
-    // size_t size, smallest_size = __INT_MAX__;
-    // for (bp = heap_listp; 0 < (size = GET_SIZE(bp)); bp = NEXT_BLOCK(bp)) {
-    //     if (!IS_ALLOC(bp)) {
-    //         if (size > asize) {
-    //             if (size < smallest_size) {
-    //                 smallest_bp = bp;
-    //                 smallest_size = size;
-    //             }
-    //         }
-    //         else if (size == asize) return bp;
-    //     }
+    // for (; bp == NULL && exp < N_CLASS; exp++) {
+    //     bp = (segregated_list + exp)->next;
+    //     while (bp != NULL && GET_SIZE(bp) < asize)
+    //         bp = bp->next;
     // }
 
-    // return smallest_bp; // best-fit
+    // return bp;
+
+    for (; smallest_bp == NULL && exp < N_CLASS; exp++) {
+        bp = (segregated_list + exp)->next;
+        while (bp != NULL) {
+            size = GET_SIZE(bp);
+            // 블록을 넣을 수 있는 경우
+            // 딱 맞는 경우 바로 반환
+            if (size == asize)
+                return bp;
+            // 블록이 넉넉하고 최소 블록 크기인 경우 갱신
+            else if (size > asize && size < smallest_size) {
+                smallest_bp = bp;
+                smallest_size = size;
+            }
+            else
+                bp = bp->next;
+        }
+    }
+    
+    return smallest_bp;
 }
 
 static void place(Node *bp, size_t asize) {
-    static size_t min_size = ALIGNED_SIZE(1+2*HEAD_SIZE);
     size_t old_size;
     Node *next;
 
-    if (asize < (old_size = GET_SIZE(bp)) - min_size) {
+    if (asize < (old_size = GET_SIZE(bp)) - MIN_SIZE) {
         disconnect_block(bp);
         PUT(ADDR_HEAD(bp), asize+1);
         PUT(ADDR_FOOT(bp), asize+1);
@@ -224,7 +230,7 @@ static void place(Node *bp, size_t asize) {
         next = (Node *)(((char *)bp) + asize);
         PUT(ADDR_HEAD(next), old_size-asize);
         PUT(ADDR_FOOT(next), old_size-asize);
-        connect_block(segregated_list + _log2((old_size-asize)/ALIGN), next);
+        connect_block(segregated_list + find_class((old_size-asize)/ALIGN), next);
     }
     else {
         disconnect_block(bp);
@@ -241,7 +247,7 @@ void *mm_malloc(size_t size)
     if (size <= 0)
         return NULL;
 
-    asize = ALIGNED_SIZE(size+2*HEAD_SIZE);
+    asize = ALIGNED_SIZE(size);
 
     bp = find_fit(asize);
     if (bp == NULL) {
@@ -257,7 +263,7 @@ void *mm_malloc(size_t size)
 void mm_free(void *bp)
 {
     size_t size = GET_SIZE(bp);
-    Node *cur = segregated_list + _log2((size/ALIGN));
+    Node *cur = segregated_list + find_class((size/ALIGN));
 
     PUT(ADDR_HEAD(bp), size);
     PUT(ADDR_FOOT(bp), size);
@@ -271,15 +277,34 @@ void *mm_realloc(void *ptr, size_t size)
 {
     void *oldptr = ptr;
     void *newptr;
+    void *next_block = NEXT_BLOCK(ptr);
+    size_t old_size = GET_SIZE(ptr);
+    size_t dsize;
     size_t copySize;
     
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
-        return NULL;
-    copySize = *(size_t *)((char *)oldptr - sizeof(size_t));
-    if (size < copySize)
-        copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+    if (ALIGNED_SIZE(size) <= old_size) {
+        return oldptr;
+    }
+
+    dsize = ALIGNED_SIZE(size)-old_size;
+    if (!IS_ALLOC(next_block) && dsize <= GET_SIZE(next_block)) {
+        place(next_block, dsize);
+        size = GET_SIZE(next_block);
+
+        PUT(ADDR_HEAD(oldptr), old_size+size+1);
+        PUT(ADDR_FOOT(oldptr), old_size+size+1);
+
+        return oldptr;
+    }
+    else {
+        newptr = mm_malloc(size);
+        if (newptr == NULL)
+            return NULL;
+        copySize = *(size_t *)((char *)oldptr - sizeof(size_t));
+        if (size < copySize)
+            copySize = size;
+        memcpy(newptr, oldptr, copySize);
+        mm_free(oldptr);
+        return newptr;
+    }
 }
