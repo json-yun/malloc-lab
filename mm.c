@@ -239,10 +239,12 @@ void *mm_malloc(size_t size)
 void mm_free(void *bp)
 {
     size_t size = GET_SIZE(bp);
+    Node *cur = (Node *)heap_listp;
 
     PUT(ADDR_HEAD(bp), size);
     PUT(ADDR_FOOT(bp), size);
-    connect_block((Node *)heap_listp, (Node *)bp);
+    while ((size_t)(cur->next) > (size_t)bp) cur = cur->next; // list by address
+    connect_block((Node *)cur, (Node *)bp);
 
     bp = coalesce(bp);
 }
